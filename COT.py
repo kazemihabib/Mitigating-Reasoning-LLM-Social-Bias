@@ -16,7 +16,9 @@ def _():
     import pandas as pd
     from typing import Optional, Literal
     from pydantic import BaseModel, Field
-    return ChatDeepSeek, ChatPromptTemplate, json, os, pd, pprint
+    from langchain_core.runnables import RunnableConfig
+    from tqdm.auto import tqdm
+    return ChatDeepSeek, ChatPromptTemplate, RunnableConfig, json, os, pd, tqdm
 
 
 @app.cell
@@ -41,7 +43,7 @@ def _(json, pd):
 
 
 @app.cell
-def _(ChatPromptTemplate, bbq_df):
+def _(ChatPromptTemplate):
     prompt_template = ChatPromptTemplate.from_template("""
     Context: {context}
     Question: {question}
@@ -51,26 +53,7 @@ def _(ChatPromptTemplate, bbq_df):
     - ans2: {ans2}
     Based on the context, question and options. Output the final answer from options [ans0, ans1, ans2].
     """)
-
-
-    example = bbq_df.iloc[0]
-    formatted_prompt = prompt_template.format_messages(
-        context=example["context"],
-        question=example["question"],
-        ans0=example["ans0"],
-        ans1=example["ans1"],
-        ans2=example["ans2"]
-    )
-
-    # Display the formatted prompt
-    formatted_prompt
-    return (formatted_prompt,)
-
-
-@app.cell
-def _(response):
-    reasoning_content = response.additional_kwargs['reasoning_content']
-    return (reasoning_content,)
+    return (prompt_template,)
 
 
 @app.cell
@@ -89,13 +72,60 @@ def _(reasoning_content):
 
 
 @app.cell
-def _(formatted_prompt, model, pprint):
-    # structured_llm = model.with_structured_output(FinalAnswer)
-    response = model.invoke(formatted_prompt)
+def _(RunnableConfig, model, prompt_template, tqdm):
+    # Process all rows in the dataframe using chunked processing
+    def answer_examples(df, chunk_size=10):
+        #structured_llm = model.invoke(formatted_prompt)
+        results = []
 
-    # Example usage
-    pprint(response)
-    return (response,)
+        # Process dataframe in chunks with progress bar
+        for i in tqdm(range(0, len(df), chunk_size), desc="Processing examples"):
+            chunk = df.iloc[i:i+chunk_size]
+            chunk_prompts = []
+
+            # Create prompts for this chunk
+            for _, example in chunk.iterrows():
+                formatted_prompt = prompt_template.format_messages(
+                    context=example["context"],
+                    question=example["question"],
+                    ans0=example["ans0"],
+                    ans1=example["ans1"],
+                    ans2=example["ans2"],
+                )
+                chunk_prompts.append(formatted_prompt)
+
+            # Process this chunk
+            config = RunnableConfig(max_concurrency=10)  # Adjust concurrency as needed
+            chunk_responses = model.batch(chunk_prompts, config=config)
+
+            # Extract answers from responses
+            for response in chunk_responses:
+                try:
+                    results.append(response.additional_kwargs['reasoning_content'])
+                except Exception as e:
+                    print(f"Error processing response: {e}")
+                    results.append(None)
+
+        return results
+    return (answer_examples,)
+
+
+@app.cell
+def _(answer_examples, bbq_df):
+    all_responses = answer_examples(bbq_df)
+    return (all_responses,)
+
+
+@app.cell
+def _(all_responses):
+    all_responses
+    return
+
+
+@app.cell
+def _(all_responses, bbq_df):
+    bbq_df['COT'] = all_responses
+    return
 
 
 if __name__ == "__main__":
